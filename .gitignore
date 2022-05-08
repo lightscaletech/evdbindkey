@@ -1,0 +1,17 @@
+keybindings
+keybindingsd
+
+config.log
+config.status
+autom4te.cache
+
+configure
+Makefile
+Makefile.in
+
+aclocal.m4
+install-sh
+compile
+depcomp
+missing
+.deps
