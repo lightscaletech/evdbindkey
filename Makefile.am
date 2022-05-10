@@ -1,9 +1,14 @@
 bin_PROGRAMS=keybindingsd keybindings
+noinst_LIBRARIES=libkeybindings.a
+
+libkeybindings_a_SOURCES=\
+	src/ipc_sock.c \
+	src/logging.c
 
 
-keybindingsd_CFLAGS=$(EVDEV_CFLAGS) $(UDEV_CFLAGS)
-keybindingsd_LDADD=$(EVDEV_LIBS) $(UDEV_LIBS)
+keybindingsd_CFLAGS=$(LIBEVDEV_CFLAGS) $(LIBUDEV_CFLAGS)
+keybindingsd_LDADD=libkeybindings.a $(LIBEVDEV_LIBS) $(LIBUDEV_LIBS)
+keybindingsd_SOURCES=src/keybindingsd.c
 
-keybindingd_SOURCES=keybindingsd.c
-
-keybindings_SOURCES=keybindings.c
+keybindings_LDADD=libkeybindings.a
+keybindings_SOURCES=src/keybindings.c

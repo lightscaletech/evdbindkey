@@ -1,5 +1,6 @@
 keybindings
 keybindingsd
+libkeybindings.a
 
 config.log
 config.status
@@ -15,3 +16,8 @@ compile
 depcomp
 missing
 .deps
+ar-lib
+config.h
+config.guess
+config.sub
+stamp-h1
