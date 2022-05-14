@@ -1,12 +1,15 @@
-#include "config.h"
+#include "../config.h"
 #include "ipc_sock.h"
+#include "signal.h"
+#include "shared_structs.h"
+#include "logging.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <fcntl.h>
-#include <signal.h>
 #include <poll.h>
 #include <errno.h>
 #include <sys/socket.h>
@@ -22,6 +25,7 @@
 
 struct device {
     int fd;
+    char * name;
     struct libevdev *evdev;
 };
 
@@ -30,11 +34,7 @@ struct devices {
     struct udev * udev;
     struct udev_monitor * monitor;
     struct device ** data;
-};
-
-struct keybind {
-    unsigned int id;
-    unsigned short keys[6];
+    unsigned short keys[KEYSTROKE_MAX_SIZE];
 };
 
 struct client {
@@ -56,9 +56,6 @@ struct pollfds_layout {
     struct pollfd * pfds;
 };
 
-// GLOBALS
-sig_atomic_t running = 1;
-
 // FUNCTION DEFINITIONS
 static struct device * device_new(const char * path);
 static void device_free(struct device *);
@@ -66,62 +63,92 @@ static void device_free(struct device *);
 static int devices_init(struct devices *);
 static int devices_add(struct devices *, struct device *);
 static struct device * devices_find_by_fd(struct devices *, int);
+static int devices_index_from_name(struct devices *, const char *);
+static void devices_remove(struct devices *, int);
 
 static struct client * client_new();
 static void client_free(struct client *);
 
 static struct socket * socket_new();
 static void socket_free(struct socket *);
-static int socket_add_client(struct socket *, struct client *);
-static struct client * socket_find_client_by_id(struct socket *, int);
+static int socket_client_add(struct socket *, struct client *);
+static int socket_client_index_from_fd(struct socket *, int);
+static void socket_client_remove(struct socket *, int);
 
-static struct pollfds_layout * pollfds_layout_create(struct devices*, struct socket *);
+static struct pollfds_layout * pollfds_layout_create(struct devices *,
+                                                     struct socket *);
 static void pollfds_layout_free(struct pollfds_layout *);
+static struct pollfds_layout * pollfds_layout_recreate(struct pollfds_layout *,
+                                                       struct devices *,
+                                                       struct socket *);
 
 static void find_devices(struct devices *);
 
 static void start_polling(struct devices *, struct socket *);
-static void handle_poll_events(struct pollfds_layout *,
-                               struct devices *,
-                               struct socket *);
+
+static struct pollfds_layout * handle_poll_events(struct pollfds_layout *,
+                                                  struct devices *,
+                                                  struct socket *);
+
 static struct pollfds_layout * handle_new_connection(
     struct pollfds_layout *, struct devices *, struct socket *
 );
 
+static struct pollfds_layout * handle_udev_monitor(struct pollfds_layout *,
+                                                   struct devices *,
+                                                   struct socket *);
+
+static void handle_client_bind_keys(int client_index, struct socket * sock);
+
+static struct pollfds_layout * handle_client_events(struct pollfd * pfd,
+                                                    struct pollfds_layout * pfdsl,
+                                                    struct devices * devices,
+                                                    struct socket * sock);
+
 static void handle_key_event(struct pollfd *, struct devices *);
-
-
-static void handle_signal_shutdown(int);
-static int setup_signals();
 
 // IMPLEMENTATION
 
 struct device *
 device_new(const char * path)
 {
-    struct device * dev = (struct device *) malloc(sizeof(struct device));
+    size_t size;
+    struct device * dev;
     int rc;
+
+    size = sizeof(struct device);
+    dev = (struct device *) malloc(size);
+    memset(dev, 0, size);
+
+    size = strlen(path) + 1;
+    dev->name = malloc(size);
+    strncpy(dev->name, path, size);
+
+    log_debug("name: %s", dev->name);
 
     dev->fd = open(path, O_RDONLY | O_NONBLOCK);
     if(dev->fd < 0) {
-        printf("Filed to open: %s", path);
+        log_error("Failed to device: %s", path);
+        perror("");
         free(dev);
-        return 0;
+        return NULL;
     }
 
     rc = libevdev_new_from_fd(dev->fd, &dev->evdev);
     if(rc < 0) {
-        printf("Filed to create libevdev device: %s", path);
+        log_error("Filed to create libevdev device: %s", path);
         close(dev->fd);
         free(dev);
-        return 0;
+        return NULL;
     }
 
-    printf("Input device name: (%i) \"%s\"\n", dev->fd, libevdev_get_name(dev->evdev));
-    printf("Input device ID: bus %#x vendor %#x product %#x\n",
-           libevdev_get_id_bustype(dev->evdev),
-           libevdev_get_id_vendor(dev->evdev),
-           libevdev_get_id_product(dev->evdev));
+    log_info("Input device name: (%i) \"%s\"",
+             dev->fd,
+             libevdev_get_name(dev->evdev));
+    log_info("Input device ID: bus %#x vendor %#x product %#x",
+             libevdev_get_id_bustype(dev->evdev),
+             libevdev_get_id_vendor(dev->evdev),
+             libevdev_get_id_product(dev->evdev));
 
     return dev;
 }
@@ -131,6 +158,7 @@ device_free(struct device * dev)
 {
     libevdev_free(dev->evdev);
     close(dev->fd);
+    free(dev->name);
     free(dev);
 }
 
@@ -145,6 +173,13 @@ devices_init(struct devices * devices)
     devices->monitor = udev_monitor_new_from_netlink(devices->udev, "udev");
     if(devices->monitor == NULL) return -1;
 
+    rc = udev_monitor_filter_add_match_subsystem_devtype(devices->monitor, "input", NULL);
+    if(rc < 0) {
+        udev_monitor_unref(devices->monitor);
+        udev_unref(devices->udev);
+        return rc;
+    }
+
     rc = udev_monitor_enable_receiving(devices->monitor);
     if(rc < 0) {
         udev_monitor_unref(devices->monitor);
@@ -153,8 +188,7 @@ devices_init(struct devices * devices)
     }
 
     devices->count = 0;
-    devices->data = (struct device **) malloc(0);
-    if(devices->data == NULL) return -1;
+    devices->data = NULL;
 
     return 0;
 }
@@ -182,12 +216,26 @@ devices_find_by_fd(struct devices * devices, int fd)
 }
 
 int
+devices_index_from_name(struct devices * devices, const char * name)
+{
+    const char * n;
+    for(size_t i = 0; i < devices->count; ++i) {
+        n = devices->data[i]->name;
+        if(strncmp(n, name, strlen(n)) == 0) return i;
+    }
+    return -1;
+}
+
+int
 devices_add(struct devices * devices, struct device * device)
 {
     struct device ** devarr;
+    const size_t size = sizeof(struct device *);
 
-    ++devices->count;
-    devarr = realloc(devices->data, sizeof(struct device **) * devices->count);
+    if(devices->data == NULL && devices->count == 0)
+        devarr = malloc(size * ++devices->count);
+    else devarr = realloc(devices->data, size * ++devices->count);
+
     if(devarr) {
         devarr[devices->count - 1] = device;
         devices->data = devarr;
@@ -195,6 +243,27 @@ devices_add(struct devices * devices, struct device * device)
     }
 
     return -1;
+}
+
+void
+devices_remove(struct devices * devices, int index)
+{
+    size_t i;
+    struct device ** devarr = NULL;
+    size_t * count = &devices->count;
+
+    device_free(devices->data[index]);
+
+    for(i = index; i < devices->count - 1; ++i) {
+        devices->data[i] = devices->data[i + 1];
+    }
+    --*count;
+    if(*count == 0) {
+        free(devices->data);
+        devices->data = NULL;
+    }
+    else devarr = realloc(devices->data, sizeof(struct device *) * *count);
+    if(devarr) devices->data = devarr;
 }
 
 void
@@ -239,7 +308,7 @@ find_devices(struct devices *devices)
 struct client *
 client_new(int fd)
 {
-    struct client * client = (struct client *) malloc(sizeof(struct client));
+    struct client * client = malloc(sizeof(struct client));
 
     if(client) {
         client->fd = fd;
@@ -253,6 +322,7 @@ client_new(int fd)
 void
 client_free(struct client * client)
 {
+    close(client->fd);
     free(client->keybinds);
     free(client);
 }
@@ -260,7 +330,7 @@ client_free(struct client * client)
 struct socket *
 socket_new()
 {
-    struct socket * sock = (struct socket *) malloc(sizeof(struct socket));
+    struct socket * sock = malloc(sizeof(struct socket));
     struct sockaddr_un name;
     int rc;
 
@@ -273,7 +343,7 @@ socket_new()
 
     sock->fd = ipc_sock_new(&name);
     sock->clients_count = 0;
-    sock->clients = (struct client **) malloc(0);
+    sock->clients = NULL;
 
     rc = bind(sock->fd, (const struct sockaddr *) &name, sizeof(name));
     if(rc < 0) {
@@ -296,7 +366,8 @@ socket_free(struct socket *sock)
     for(size_t i = 0; i < sock->clients_count; ++i) {
         client_free(sock->clients[i]);
     }
-    free(sock->clients);
+
+    if(sock->clients_count > 0) free(sock->clients);
 
     close(sock->fd);
     unlink(IPC_SOCK_PATH);
@@ -304,14 +375,17 @@ socket_free(struct socket *sock)
 }
 
 int
-socket_add_client(struct socket * sock, struct client * client)
+socket_client_add(struct socket * sock, struct client * client)
 {
     struct client ** arr;
+    size_t size = sizeof(struct client *);
 
-    ++sock->clients_count;
-    arr = (struct client **) realloc(
-        sock->clients,
-        sizeof(struct client **) * sock->clients_count);
+    if(sock->clients_count == 0 && sock->clients == NULL) {
+        arr = malloc(size * ++sock->clients_count);
+    }
+    else {
+        arr = realloc(sock->clients, size * ++sock->clients_count);
+    }
 
     if(arr) {
         arr[sock->clients_count - 1] = client;
@@ -322,14 +396,37 @@ socket_add_client(struct socket * sock, struct client * client)
     return -1;
 }
 
-struct client *
-socket_find_client_by_id(struct socket * sock, int fd)
+int
+socket_client_index_from_fd(struct socket * sock, int fd)
 {
     for(size_t i = 0; i < sock->clients_count; ++i) {
-        if(sock->clients[i]->fd == fd) return sock->clients[i];
+        if(sock->clients[i]->fd == fd) return i;
     }
-    return NULL;
+    return -1;
 }
+
+void
+socket_client_remove(struct socket * sock, int index)
+{
+    size_t i;
+    struct client ** devarr = NULL;
+
+    client_free(sock->clients[index]);
+
+    for(i = index; i < sock->clients_count - 1; ++i) {
+        sock->clients[i] = sock->clients[i + 1];
+    }
+    --sock->clients_count;
+    if(sock->clients_count == 0) {
+        free(sock->clients);
+        sock->clients = NULL;
+    }
+    else {
+        devarr = realloc(sock->clients, sizeof(struct device *) * sock->clients_count);
+    }
+    if(devarr) sock->clients = devarr;
+}
+
 
 struct pollfds_layout *
 pollfds_layout_create(struct devices * devices, struct socket * sock)
@@ -344,9 +441,9 @@ pollfds_layout_create(struct devices * devices, struct socket * sock)
     // make it bigger with offset for ipc sock and udev monitor
     pfdsl->count = offset + devices->count + sock->clients_count;
     pfdsl->devices_start = offset;
-    pfdsl->devices_end = pfdsl->devices_start + (devices->count - 1);
-    pfdsl->clients_start = pfdsl->devices_end + 1;
-    pfdsl->clients_end = pfdsl->clients_start + (sock->clients_count - 1);
+    pfdsl->devices_end = pfdsl->devices_start + devices->count;
+    pfdsl->clients_start = pfdsl->devices_end;
+    pfdsl->clients_end = pfdsl->clients_start + sock->clients_count;
 
     pfds = (struct pollfd *) malloc(sizeof(struct pollfd) * pfdsl->count);
 
@@ -359,13 +456,13 @@ pollfds_layout_create(struct devices * devices, struct socket * sock)
     pfds[POLLFD_INDEX_MONITOR].events = POLLIN;
 
     // add devices
-    for(i = pfdsl->devices_start; i <= pfdsl->devices_end; ++i) {
+    for(i = pfdsl->devices_start; i < pfdsl->devices_end; ++i) {
         pfds[i].fd = devices->data[i - pfdsl->devices_start]->fd;
         pfds[i].events = POLLIN;
     }
 
     // add ipc clients
-    for(i = pfdsl->clients_start; i <= pfdsl->clients_end; ++i) {
+    for(i = pfdsl->clients_start; i < pfdsl->clients_end; ++i) {
         pfds[i].fd = sock->clients[i - pfdsl->clients_start]->fd;
         pfds[i].events = POLLIN;
     }
@@ -376,34 +473,40 @@ pollfds_layout_create(struct devices * devices, struct socket * sock)
 }
 
 void
-pollfds_layout_free(struct pollfds_layout *pfdsl)
+pollfds_layout_free(struct pollfds_layout * pfdsl)
 {
     free(pfdsl->pfds);
+    log_debug("pfdsl free: %i", pfdsl);
     free(pfdsl);
 }
 
+struct pollfds_layout *
+pollfds_layout_recreate(struct pollfds_layout * pfdsl,
+                        struct devices * devices,
+                        struct socket * sock)
+{
+    pollfds_layout_free(pfdsl);
+    return pollfds_layout_create(devices, sock);
+}
+
 static int
-print_event(struct input_event *ev)
+print_event(struct input_event * ev)
 {
     if (ev->type == EV_SYN)
-        printf("Event: time %ld.%06ld, ++++++++++++++++++++ %s +++++++++++++++\n",
-               ev->input_event_sec,
-               ev->input_event_usec,
-               libevdev_event_type_get_name(ev->type));
+        log_info("++++++++++++++++++++ %s +++++++++++++++",
+                 libevdev_event_type_get_name(ev->type));
     else
-        printf("Event: time %ld.%06ld, type %d (%s), code %d (%s), value %d\n",
-               ev->input_event_sec,
-               ev->input_event_usec,
-               ev->type,
-               libevdev_event_type_get_name(ev->type),
-               ev->code,
-               libevdev_event_code_get_name(ev->type, ev->code),
-               ev->value);
+        log_info("type %d (%s), code %d (%s), value %d",
+                 ev->type,
+                 libevdev_event_type_get_name(ev->type),
+                 ev->code,
+                 libevdev_event_code_get_name(ev->type, ev->code),
+                 ev->value);
     return 0;
 }
 
 void
-handle_key_event(struct pollfd *pfd, struct devices * devices)
+handle_key_event(struct pollfd * pfd, struct devices * devices)
 {
     int rc;
     unsigned int evflag;
@@ -421,7 +524,7 @@ handle_key_event(struct pollfd *pfd, struct devices * devices)
 
         rc = libevdev_next_event(current_device->evdev, evflag, &ev);
         if(rc == LIBEVDEV_READ_STATUS_SUCCESS) {
-            print_event(&ev);
+            //print_event(&ev);
         }
     } while(rc == LIBEVDEV_READ_STATUS_SUCCESS ||
             rc == LIBEVDEV_READ_STATUS_SYNC);
@@ -437,46 +540,180 @@ handle_new_connection(struct pollfds_layout * pfdsl,
     fd = accept(sock->fd, NULL, NULL);
     if(fd < 0) return pfdsl;
 
-    printf("New IPC connection: %i\n", fd);
+    log_info("New IPC connection: %i", fd);
 
     struct client * client = client_new(fd);
-    socket_add_client(sock, client);
+    socket_client_add(sock, client);
 
-    pollfds_layout_free(pfdsl);
-    return pollfds_layout_create(devices, sock);
+    ipc_write_msg(fd, IPC_MSG_READY);
+
+    return pollfds_layout_recreate(pfdsl, devices, sock);
+}
+
+struct pollfds_layout *
+handle_udev_monitor(struct pollfds_layout * pfdsl,
+                    struct devices * devices,
+                    struct socket * sock)
+{
+    struct udev_device * udevice;
+    struct device * device;
+    const char * prop, * nodepath, * action;
+
+    udevice = udev_monitor_receive_device(devices->monitor);
+
+    nodepath = udev_device_get_devnode(udevice);
+    if(nodepath == NULL) {
+        udev_device_unref(udevice);
+        return NULL;
+    }
+
+    prop = udev_device_get_property_value(udevice, "ID_INPUT_KEYBOARD");
+    if(prop == NULL || strncmp(prop, "1", 1) != 0) {
+        udev_device_unref(udevice);
+        return NULL;
+    }
+
+    action = udev_device_get_property_value(udevice, "ACTION");
+    if(!action) {
+        udev_device_unref(udevice);
+        return NULL;
+    }
+
+    if(strncmp(action, "add", strlen(action)) == 0) {
+        log_debug("KEYBOARD ADD");
+        device = device_new(nodepath);
+        if(device != NULL) {
+            devices_add(devices, device);
+            udev_device_unref(udevice);
+            return pollfds_layout_recreate(pfdsl, devices, sock);
+        }
+    }
+    else if(strncmp(action, "remove", strlen(action)) == 0) {
+        int i = devices_index_from_name(devices, nodepath);
+        log_debug("KEYBOARD REMOVE: %i", i);
+        if(i >= 0 ) {
+            devices_remove(devices, i);
+            udev_device_unref(udevice);
+            return pollfds_layout_recreate(pfdsl, devices, sock);
+        }
+    }
+
+    udev_device_unref(udevice);
+    return NULL;
 }
 
 void
+handle_client_bind_keys(int client_index, struct socket * sock)
+{
+    struct client * client = sock->clients[client_index];
+    struct keybind * binds;
+    int fd, rc;
+    size_t kbsize;
+    ipc_size amount;
+
+    fd = client->fd;
+    rc = ipc_read_timeout(fd, &amount, sizeof(amount));
+    if(rc < 0 || amount < 0) return;
+
+    binds = client->keybinds;
+    kbsize = sizeof(struct keybind);
+
+    if(binds == NULL) binds = malloc(kbsize * amount);
+    else binds = realloc(binds, kbsize * (client->keybinds_count + amount));
+
+    if(binds == NULL) return;
+
+    client->keybinds = binds;
+    client->keybinds_count += amount;
+
+    // TODO: Handle byte size bigger that SSIZE_MAX
+    rc = ipc_read_timeout(fd, binds, kbsize * amount);
+    if(rc < 0) return;
+
+    struct keybind * b;
+    for(size_t i = 0; i < client->keybinds_count; ++i) {
+        b = &client->keybinds[i];
+        log_debug("index %i (%i, %i, %i, %i, %i, %i)",
+                  b->index,
+                  b->keys[0],
+                  b->keys[1],
+                  b->keys[2],
+                  b->keys[3],
+                  b->keys[4],
+                  b->keys[5]);
+    }
+
+
+    ipc_write_msg(fd, IPC_MSG_RECV);
+}
+
+struct pollfds_layout *
+handle_client_events(struct pollfd * pfd,
+                     struct pollfds_layout * pfdsl,
+                     struct devices * devices,
+                     struct socket * sock)
+{
+    size_t buf_s = 256;
+    char buf[buf_s];
+    int client_index;
+
+    client_index = socket_client_index_from_fd(sock, pfd->fd);
+    if(client_index < 0) return NULL;
+
+    if(pfd->revents & POLLHUP) {
+        log_debug("HANGUP %i", pfd->fd);
+        socket_client_remove(sock, client_index);
+        return pollfds_layout_recreate(pfdsl, devices, sock);
+    }
+    else if(pfd->revents > 0) {
+        log_debug("DATA %i", pfd->fd);
+        read(pfd->fd, &buf, buf_s);
+
+        if(ipc_test_msg(buf, IPC_MSG_BIND)){
+            handle_client_bind_keys(client_index, sock);
+        }
+    }
+
+    return NULL;
+}
+
+struct pollfds_layout *
 handle_poll_events(struct pollfds_layout * pfdsl,
                    struct devices * devices,
                    struct socket * sock)
 {
     size_t i;
     struct pollfd * pfd;
+    struct pollfds_layout * pfdsl_new = NULL;
 
-    if(pfdsl->pfds[POLLFD_INDEX_SOCK].revents > 0) {
-        pfdsl = handle_new_connection(pfdsl, devices, sock);
+    pfd = &pfdsl->pfds[POLLFD_INDEX_SOCK];
+    if(pfd->revents > 0) {
+        pfdsl_new = handle_new_connection(pfdsl, devices, sock);
+        return pfdsl_new ? pfdsl_new : pfdsl;
     }
 
-    if(pfdsl->pfds[POLLFD_INDEX_MONITOR].revents > 0) {
-        // TODO: implement new device connected
-
+    pfd = &pfdsl->pfds[POLLFD_INDEX_MONITOR];
+    if(pfd->revents > 0) {
+        pfdsl_new = handle_udev_monitor(pfdsl, devices, sock);
+        return pfdsl_new ? pfdsl_new : pfdsl;
     }
 
-    for(i = pfdsl->devices_start; i <= pfdsl->devices_end; ++i) {
+    for(i = pfdsl->devices_start; i < pfdsl->devices_end; ++i) {
         pfd = &pfdsl->pfds[i];
-        if(pfd->revents == POLLHUP) {
-            printf("DISCONNECTED\n");
-        }
-        else if(pfd->revents > 0) {
+        if(pfd->revents > 0) {
             handle_key_event(pfd, devices);
         }
     }
 
-    for(i = pfdsl->clients_start; i <= pfdsl->clients_end; ++i) {
-
+    for(i = pfdsl->clients_start; i < pfdsl->clients_end; ++i) {
+        pfd = &pfdsl->pfds[i];
+        if(pfd->revents > 0) {
+            pfdsl_new = handle_client_events(pfd, pfdsl, devices, sock);
+            return pfdsl_new ? pfdsl_new : pfdsl;
+        }
     }
 
+    return pfdsl;
 }
 
 void
@@ -487,43 +724,18 @@ start_polling(struct devices * devices, struct socket * sock)
 
     pfdsl = pollfds_layout_create(devices, sock);
 
-    while(running) {
+    while(signal_running) {
         rc = poll(pfdsl->pfds, pfdsl->count, -1);
 
         if(rc < 0) break; // error
         if(rc == 0) continue; // timeout
 
-        handle_poll_events(pfdsl, devices, sock);
+        pfdsl = handle_poll_events(pfdsl, devices, sock);
+
+        if(pfdsl == NULL) break;
     }
 
-    pollfds_layout_free(pfdsl);
-}
-
-void
-handle_signal_shutdown(int sig)
-{
-    running = 0;
-}
-
-int
-setup_signals()
-{
-    int rc;
-    struct sigaction action;
-
-    memset(&action, 0, sizeof(action));
-    action.sa_handler = handle_signal_shutdown;
-    rc = sigemptyset(&action.sa_mask);
-    if(rc < 0) return rc;
-    rc = sigaction(SIGINT, &action, 0);
-    if(rc < 0) return rc;
-
-    rc = sigemptyset(&action.sa_mask);
-    if(rc < 0) return rc;
-    rc = sigaction(SIGTERM, &action, 0);
-    if(rc < 0) return rc;
-
-    return rc;
+    if(pfdsl != NULL) pollfds_layout_free(pfdsl);
 }
 
 int
@@ -533,7 +745,7 @@ main(int argi, char** argv)
     struct devices devices;
     struct socket * sock;
 
-    rc = setup_signals();
+    rc = signal_setup_actions();
     if(rc < 0) {
         perror("Failed to setup signals");
         exit(-1);

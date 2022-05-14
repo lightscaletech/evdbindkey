@@ -37,6 +37,9 @@
 /* Path to the IPC socket */
 #undef IPC_SOCK_PATH
 
+/* Maximum size of keystroke */
+#undef KEYSTROKE_MAX_SIZE
+
 /* Name of package */
 #undef PACKAGE
 

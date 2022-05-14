@@ -1,7 +1,7 @@
 AC_INIT([keybindings],[0.0.1])
 
 AC_CONFIG_HEADERS([config.h])
-AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
+AM_INIT_AUTOMAKE([foreign subdir-objects])
 
 AC_PROG_CC
 AC_PROG_RANLIB
@@ -46,6 +46,9 @@ PKG_CHECK_MODULES([LIBEVDEV], [libevdev])
 PKG_CHECK_MODULES([LIBUDEV], [libudev])
 
 AC_DEFINE([IPC_SOCK_PATH], ["/tmp/keybindings.sock"], [Path to the IPC socket])
+AC_DEFINE([KEYSTROKE_MAX_SIZE], [6], [Maximum size of keystroke])
+
+CFLAGS="$CFLAGS -Wall"
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
