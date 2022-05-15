@@ -27,6 +27,7 @@ struct device {
     int fd;
     char * name;
     struct libevdev *evdev;
+    key_code_t keys[KEYSTROKE_MAX_SIZE];
 };
 
 struct devices {
@@ -34,7 +35,6 @@ struct devices {
     struct udev * udev;
     struct udev_monitor * monitor;
     struct device ** data;
-    unsigned short keys[KEYSTROKE_MAX_SIZE];
 };
 
 struct client {
@@ -105,7 +105,11 @@ static struct pollfds_layout * handle_client_events(struct pollfd * pfd,
                                                     struct devices * devices,
                                                     struct socket * sock);
 
-static void handle_key_event(struct pollfd *, struct devices *);
+
+static void handle_key(struct device * device, struct socket * sock,
+                       struct input_event * ev);
+static void handle_device_event(struct pollfd * pfd, struct devices * devices,
+                                struct socket * sock);
 
 // IMPLEMENTATION
 
@@ -489,32 +493,98 @@ pollfds_layout_recreate(struct pollfds_layout * pfdsl,
     return pollfds_layout_create(devices, sock);
 }
 
-static int
-print_event(struct input_event * ev)
+static void
+keybind_trigger(struct client * client, int i)
 {
-    if (ev->type == EV_SYN)
-        log_info("++++++++++++++++++++ %s +++++++++++++++",
-                 libevdev_event_type_get_name(ev->type));
-    else
-        log_info("type %d (%s), code %d (%s), value %d",
-                 ev->type,
-                 libevdev_event_type_get_name(ev->type),
-                 ev->code,
-                 libevdev_event_code_get_name(ev->type, ev->code),
-                 ev->value);
-    return 0;
+    keybind_index index;
+    index = client->keybinds[i].index;
+    ipc_write_msg(client->fd, IPC_MSG_TRIG);
+    write(client->fd, &index, sizeof(index));
+}
+
+static int
+find_key(key_code_t * keys, key_code_t key)
+{
+    for(size_t i = 0; i < KEYSTROKE_MAX_SIZE; ++i)
+        if(keys[i] == key) return i;
+
+    return -1;
+}
+
+static int
+check_keys_match_keybind(key_code_t * keys, key_code_t * keybind)
+{
+    size_t i;
+    int rc;
+    key_code_t k;
+    for(i = 0; i < KEYSTROKE_MAX_SIZE; ++i) {
+        k = keybind[i];
+        rc = find_key(keys, k);
+        if(rc < 0) return 0;
+    }
+    return 1;
+}
+
+static void
+check_keys_match_clients(key_code_t * keys, struct socket * sock)
+{
+    size_t ic, ik;
+    int rc;
+    struct client * client;
+    struct keybind * keybind;
+    for(ic = 0; ic < sock->clients_count; ++ic) {
+        client = sock->clients[ic];
+        for(ik = 0; ik < client->keybinds_count; ++ik) {
+            keybind = &client->keybinds[ik];
+            rc = check_keys_match_keybind(keys, keybind->keys);
+            if(rc) keybind_trigger(client, ik);
+        }
+    }
+}
+
+static int
+find_empty_key(key_code_t * keys)
+{
+    for(size_t i = 0; i < KEYSTROKE_MAX_SIZE; ++i)
+        if(keys[i] == 0) return i;
+
+    return -1;
 }
 
 void
-handle_key_event(struct pollfd * pfd, struct devices * devices)
+handle_key(struct device * device,
+           struct socket * sock,
+           struct input_event * ev)
+{
+    int rc;
+
+    if(ev->type == EV_KEY && (ev->value == 0 || ev->value == 1)) {
+        if(ev->value == 0) {
+            rc = find_key(device->keys, ev->code);
+            if(rc >= 0) device->keys[rc] = 0;
+        }
+        else if(ev->value == 1) {
+            rc = find_key(device->keys, ev->code);
+            if(rc >= 0) return;
+            rc = find_empty_key(device->keys);
+            if(rc >= 0) device->keys[rc] = ev->code;
+        }
+        check_keys_match_clients(device->keys, sock);
+    }
+}
+
+void
+handle_device_event(struct pollfd * pfd,
+                    struct devices * devices,
+                    struct socket * sock)
 {
     int rc;
     unsigned int evflag;
-    struct device * current_device = 0;
+    struct device * device = 0;
     struct input_event ev;
 
-    current_device = devices_find_by_fd(devices, pfd->fd);
-    if(current_device == NULL) return;
+    device = devices_find_by_fd(devices, pfd->fd);
+    if(device == NULL) return;
 
     rc = LIBEVDEV_READ_STATUS_SUCCESS;
     do {
@@ -522,9 +592,9 @@ handle_key_event(struct pollfd * pfd, struct devices * devices)
                   LIBEVDEV_READ_FLAG_SYNC :
                   LIBEVDEV_READ_FLAG_NORMAL);
 
-        rc = libevdev_next_event(current_device->evdev, evflag, &ev);
+        rc = libevdev_next_event(device->evdev, evflag, &ev);
         if(rc == LIBEVDEV_READ_STATUS_SUCCESS) {
-            //print_event(&ev);
+            handle_key(device, sock, &ev);
         }
     } while(rc == LIBEVDEV_READ_STATUS_SUCCESS ||
             rc == LIBEVDEV_READ_STATUS_SYNC);
@@ -630,20 +700,6 @@ handle_client_bind_keys(int client_index, struct socket * sock)
     rc = ipc_read_timeout(fd, binds, kbsize * amount);
     if(rc < 0) return;
 
-    struct keybind * b;
-    for(size_t i = 0; i < client->keybinds_count; ++i) {
-        b = &client->keybinds[i];
-        log_debug("index %i (%i, %i, %i, %i, %i, %i)",
-                  b->index,
-                  b->keys[0],
-                  b->keys[1],
-                  b->keys[2],
-                  b->keys[3],
-                  b->keys[4],
-                  b->keys[5]);
-    }
-
-
     ipc_write_msg(fd, IPC_MSG_RECV);
 }
 
@@ -701,7 +757,7 @@ handle_poll_events(struct pollfds_layout * pfdsl,
     for(i = pfdsl->devices_start; i < pfdsl->devices_end; ++i) {
         pfd = &pfdsl->pfds[i];
         if(pfd->revents > 0) {
-            handle_key_event(pfd, devices);
+            handle_device_event(pfd, devices, sock);
         }
     }
 

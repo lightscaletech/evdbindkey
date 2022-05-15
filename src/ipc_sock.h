@@ -5,6 +5,7 @@
 #define IPC_MSG_READY "ready"
 #define IPC_MSG_BIND  "bind"
 #define IPC_MSG_RECV  "recv"
+#define IPC_MSG_TRIG  "trigger"
 
 #include <unistd.h>
 

@@ -80,7 +80,6 @@ send_key_binds(int fd)
 
     amount = sizeof(binds) / sizeof(struct keybind);
 
-
     rc = ipc_write_msg(fd, IPC_MSG_BIND);
     if(rc < 0) return rc;
 
@@ -100,6 +99,18 @@ send_key_binds(int fd)
     return -1;
 }
 
+static void
+run_keybind(int fd)
+{
+    keybind_index index;
+    int rc;
+
+    rc = ipc_read_timeout(fd, &index, sizeof(keybind_index));
+    if(rc < 0) return;
+
+    log_info("trigger: %i", index);
+}
+
 int
 handle_message(int fd)
 {
@@ -110,6 +121,10 @@ handle_message(int fd)
     if(ipc_test_msg(buf, IPC_MSG_READY)) {
         log_info("READY");
         return send_key_binds(fd);
+    }
+
+    if(ipc_test_msg(buf, IPC_MSG_TRIG)) {
+        run_keybind(fd);
     }
 
     return 0;

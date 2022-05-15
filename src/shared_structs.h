@@ -3,9 +3,12 @@
 
 #include "../config.h"
 
+typedef unsigned int keybind_index;
+typedef unsigned short key_code_t;
+
 struct keybind {
-    unsigned int index;
-    unsigned short keys[KEYSTROKE_MAX_SIZE];
+    keybind_index index;
+    key_code_t keys[KEYSTROKE_MAX_SIZE];
 };
 
 #endif
