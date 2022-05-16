@@ -3,6 +3,8 @@ AC_INIT([keybindings],[0.0.1])
 AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign subdir-objects])
 
+: ${CFLAGS="-O2"}
+
 AC_PROG_CC
 AC_PROG_RANLIB
 AM_PROG_AR
@@ -47,6 +49,19 @@ PKG_CHECK_MODULES([LIBUDEV], [libudev])
 
 AC_DEFINE([IPC_SOCK_PATH], ["/tmp/keybindings.sock"], [Path to the IPC socket])
 AC_DEFINE([KEYSTROKE_MAX_SIZE], [6], [Maximum size of keystroke])
+
+AC_ARG_ENABLE(debug,
+    AS_HELP_STRING([--enable-debug], [enable debugging, default: yes]),
+    [case "${enableval}" in
+          yes) debug=true ;;
+          no)  debug=false ;;
+          *)   AC_MSG_ERROR([bad value ${enableval} for --enable-debug]) ;;
+     esac],
+     [debug=true])
+
+if test x"$debug" = x"true"; then
+   CFLAGS="$CFLAGS -g"
+fi
 
 CFLAGS="$CFLAGS -Wall"
 
