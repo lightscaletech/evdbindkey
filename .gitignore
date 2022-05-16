@@ -2,6 +2,7 @@ keybindings
 keybindingsd
 libkeybindings.a
 *.o
+*~
 
 config.log
 config.status
