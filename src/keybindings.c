@@ -1,6 +1,7 @@
 #include "ipc_sock.h"
 #include "signal.h"
 #include "shared_structs.h"
+#include "client_config.h"
 #include "logging.h"
 
 #include <stdio.h>
@@ -13,18 +14,6 @@
 
 #include <libevdev/libevdev.h>
 
-#define LENGTH(X)               (sizeof X / sizeof X[0])
-#define END(A)                  ((A) + LENGTH(A))
-
-enum status {
-    STATUS_WAIT_READY    = 0x1,
-    STATUS_READY         = 0x2,
-    STATUS_SEND_KEYBIND  = 0x4,
-    STATUS_WAIT_RECV     = 0x8,
-
-    STATUS_ERR           = 0x80
-};
-
 struct socket {
     int fd;
 };
@@ -32,9 +21,11 @@ struct socket {
 static struct socket * socket_new();
 static void socket_free(struct socket *);
 
+static void run_keybind(int);
 static int send_key_binds(int);
 static int handle_message(int);
 static void start_polling(struct socket *);
+
 
 struct keybind binds[] = {
     {.index = 0, .keys = { KEY_LEFTCTRL, KEY_LEFTALT, KEY_LEFTSHIFT, KEY_L, 0, 0}},
@@ -55,10 +46,16 @@ socket_new()
     if(sock == NULL) return sock;
 
     sock->fd = ipc_sock_new(&name);
-    if(sock < 0) return NULL;
+    if(sock < 0) {
+        free(sock);
+        return NULL;
+    }
 
     rc = connect(sock->fd, (struct sockaddr *) &name, sizeof(name));
-    if(rc < 0) return NULL;
+    if(rc < 0) {
+        free(sock);
+        return NULL;
+    }
 
     return sock;
 }
@@ -99,7 +96,7 @@ send_key_binds(int fd)
     return -1;
 }
 
-static void
+void
 run_keybind(int fd)
 {
     keybind_index index;
@@ -161,13 +158,21 @@ start_polling(struct socket * sock)
     }
 }
 
+
 int main(int argi, char** argv) {
     int rc;
     struct socket * sock;
+    struct config_item * config_items;
 
     rc = signal_setup_actions();
     if(rc < 0) {
         perror("Failed to setup signals");
+        exit(-1);
+    }
+
+    config_items = read_config();
+    if(config_items == NULL) {
+        perror("Failed to read config");
         exit(-1);
     }
 
