@@ -13,4 +13,5 @@ keybindingsd_SOURCES=src/keybindingsd.c
 
 keybindings_CFLAGS=$(LIBEVDEV_CFLAGS)
 keybindings_LDADD=libkeybindings.a $(LIBEVDEV_LIBS)
-keybindings_SOURCES=src/keybindings.c
+keybindings_SOURCES=src/keybindings.c \
+	src/client_config.c
