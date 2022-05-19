@@ -1,6 +1,5 @@
-keybindings
-keybindingsd
-libkeybindings.a
+evdbindkey
+evdbindkeyd
 *.o
 *~
 
