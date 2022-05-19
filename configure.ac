@@ -1,4 +1,4 @@
-AC_INIT([keybindings],[0.0.1])
+AC_INIT([evdbindkey], [0.1.0])
 
 AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign subdir-objects])
@@ -6,8 +6,6 @@ AM_INIT_AUTOMAKE([foreign subdir-objects])
 : ${CFLAGS="-O2"}
 
 AC_PROG_CC
-AC_PROG_RANLIB
-AM_PROG_AR
 AC_C_CONST
 AC_C_VARARRAYS
 AC_FUNC_MALLOC

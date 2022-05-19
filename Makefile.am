@@ -1,17 +1,16 @@
-bin_PROGRAMS=keybindingsd keybindings
-noinst_LIBRARIES=libkeybindings.a
+bin_PROGRAMS=evdbindkeyd evdbindkey
 
-libkeybindings_a_SOURCES=\
+evdbindkeyd_CFLAGS=$(LIBEVDEV_CFLAGS) $(LIBUDEV_CFLAGS)
+evdbindkeyd_LDADD=$(LIBEVDEV_LIBS) $(LIBUDEV_LIBS)
+evdbindkeyd_SOURCES=src/evdbindkeyd.c \
 	src/ipc_sock.c \
 	src/signal.c \
 	src/logging.c
 
-
-keybindingsd_CFLAGS=$(LIBEVDEV_CFLAGS) $(LIBUDEV_CFLAGS)
-keybindingsd_LDADD=libkeybindings.a $(LIBEVDEV_LIBS) $(LIBUDEV_LIBS)
-keybindingsd_SOURCES=src/keybindingsd.c
-
-keybindings_CFLAGS=$(LIBEVDEV_CFLAGS)
-keybindings_LDADD=libkeybindings.a $(LIBEVDEV_LIBS)
-keybindings_SOURCES=src/keybindings.c \
-	src/client_config.c
+evdbindkey_CFLAGS=$(LIBEVDEV_CFLAGS)
+evdbindkey_LDADD=$(LIBEVDEV_LIBS)
+evdbindkey_SOURCES=src/evdbindkey.c \
+	src/client_config.c \
+	src/ipc_sock.c \
+	src/signal.c \
+	src/logging.c
