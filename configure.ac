@@ -34,6 +34,11 @@ AC_CHECK_HEADER([poll.h], [], [
     exit -1
 ])
 
+AC_CHECK_HEADER([regex.h], [], [
+    echo "Missing regex.h header"
+    exit -1
+])
+
 AC_CHECK_HEADER([sys/socket.h], [], [
     echo "Missing sys/socket.h header"
     exit -1
