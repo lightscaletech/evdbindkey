@@ -49,6 +49,11 @@ AC_CHECK_HEADER([sys/un.h], [], [
     exit -1
 ])
 
+AC_CHECK_HEADER([sys/wait.h], [], [
+    echo "Missing sys/wait.h header"
+    exit -1
+])
+
 PKG_CHECK_MODULES([LIBEVDEV], [libevdev])
 PKG_CHECK_MODULES([LIBUDEV], [libudev])
 
