@@ -14,3 +14,14 @@ evdbindkey_SOURCES=src/evdbindkey.c \
 	src/ipc_sock.c \
 	src/signal.c \
 	src/logging.c
+
+if HAVE_SYSTEMD
+SERVICE_SUBS = \
+s,[@]bindir[@],$(bindir),g
+
+data/systemd/system/evdbindkeyd.service: data/systemd/system/evdbindkeyd.service.in
+	$(SED) -e '$(SERVICE_SUBS)' < $< > $@
+
+systemdsystemunit_DATA=\
+	data/systemd/system/evdbindkeyd.service
+endif

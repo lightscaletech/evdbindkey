@@ -22,3 +22,5 @@ config.h
 config.guess
 config.sub
 stamp-h1
+
+data/systemd/system/evdbindkeyd.service

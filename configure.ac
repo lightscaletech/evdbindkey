@@ -9,6 +9,7 @@ AC_PROG_CC
 AC_C_CONST
 AC_C_VARARRAYS
 AC_FUNC_MALLOC
+AC_PROG_SED
 
 AC_CHECK_INCLUDES_DEFAULT
 
@@ -73,5 +74,25 @@ fi
 
 CFLAGS="$CFLAGS -Wall"
 
-AC_CONFIG_FILES([Makefile])
+# Systemd unit directory
+AC_ARG_WITH([systemdsystemunitdir],
+    [AS_HELP_STRING([--with-systemdsystemunitdir=DIR], [Directory for systemd service files])],,
+    [with_systemdsystemunitdir=auto])
+
+AS_IF([test "x$with_systemdsystemunitdir" = "xyes" -o "x$with_systemdsystemunitdir" = "xauto"], [
+      def_systemdsystemunitdir=$($PKG_CONFIG --variable=systemdsystemunitdir systemd)
+      AS_IF([test "x$def_systemdsystemunitdir" = "x"],
+            [AS_IF([test "x$with_systemdsystemunitdir" = "xyes"],
+                   [AC_MSG_ERROR([systemd support requested but pkg-config unable to query systemd package])])
+             with_systemdsystemunitdir=no],
+      [with_systemdsystemunitdir="$def_systemdsystemunitdir"])])
+
+AS_IF([test "x$with_systemdsystemunitdir" != "xno"],
+      [AC_SUBST([systemdsystemunitdir], [$with_systemdsystemunitdir])])
+
+AM_CONDITIONAL([HAVE_SYSTEMD], [test "x$with_systemdsystemunitdir" != "xno"])
+
+AC_CONFIG_FILES([
+    Makefile
+])
 AC_OUTPUT

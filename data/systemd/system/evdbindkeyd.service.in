@@ -1,0 +1,9 @@
+[Unit]
+Description=evdbindkeyd service
+
+[Service]
+Type=simple
+ExecStart=@bindir@/evdbindkeyd
+
+[Install]
+WantedBy=multi-user.target
