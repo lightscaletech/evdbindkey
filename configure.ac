@@ -56,7 +56,7 @@ AC_CHECK_HEADER([sys/wait.h], [], [
 PKG_CHECK_MODULES([LIBEVDEV], [libevdev])
 PKG_CHECK_MODULES([LIBUDEV], [libudev])
 
-AC_DEFINE([IPC_SOCK_PATH], ["/tmp/keybindings.sock"], [Path to the IPC socket])
+AC_DEFINE([IPC_SOCK_PATH], ["/var/run/evdkeybind.sock"], [Path to the IPC socket])
 AC_DEFINE([KEYSTROKE_MAX_SIZE], [6], [Maximum size of keystroke])
 
 AC_ARG_ENABLE(debug,

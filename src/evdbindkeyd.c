@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 
 #include <libudev.h>
 #include <libevdev/libevdev.h>
@@ -354,6 +355,8 @@ socket_new()
         free(sock);
         return NULL;
     }
+
+    rc = chmod(name.sun_path, S_IRWXU | S_IRWXG | S_IRWXO);
 
     rc = listen(sock->fd, 10);
     if(rc < 0) {
